@@ -21,13 +21,12 @@ CMP_URL = "https://aplicaciones.cmp.org.pe/conoce_a_tu_medico/index.php"
 # 🔹 Función principal
 #############################
 async def run_cmp(cmp_number):
-    """Automatiza la búsqueda y extracción de datos del CMP (versión Cloud Run estable)."""
+    """Automatiza la búsqueda y extracción de datos del CMP (versión robusta para VM)."""
     print(f"\n========== INICIO BÚSQUEDA CMP {cmp_number} ==========")
 
     async with async_playwright() as p:
-        # ✅ HEADLESS + OPCIONES "STEALTH" para entornos sin interfaz
         browser = await p.chromium.launch(
-            headless=True,
+            headless=False,  # 👈 Cambiado: ejecuta el navegador real (no oculto)
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
@@ -36,12 +35,12 @@ async def run_cmp(cmp_number):
                 "--disable-infobars",
                 "--disable-extensions",
                 "--disable-gpu",
-                "--single-process",
-                "--no-zygote"
+                "--start-maximized",
             ]
         )
 
         context = await browser.new_context(
+            viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
                        "Chrome/120.0.0.0 Safari/537.36"
@@ -50,46 +49,51 @@ async def run_cmp(cmp_number):
         page = await context.new_page()
 
         try:
-            # 1️⃣ Cargar página principal
             print("[INFO] Cargando página principal...")
             await page.goto(CMP_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(500)
 
-            # Espera adicional para asegurar carga completa
-            await page.wait_for_timeout(1500)
-
-            # 2️⃣ Esperar campo CMP visible
             print("[INFO] Esperando campo CMP...")
             await page.wait_for_selector('input[name="cmp"]', timeout=30000)
 
-            # 3️⃣ Ingresar CMP
             print(f"[INFO] Ingresando CMP: {cmp_number}")
             await page.fill('input[name="cmp"]', str(cmp_number))
 
-            # 4️⃣ Presionar botón “Buscar”
             print("[INFO] Presionando botón Buscar...")
             await page.click('input.btn.btn-sub[type="submit"]')
-
-            # Esperar carga de la siguiente página
             await page.wait_for_load_state("networkidle", timeout=90000)
             print("[INFO] Página de resultados cargada correctamente")
 
-            # 5️⃣ Click en “Detalle”
             print("[INFO] Buscando enlace de detalle...")
-            await page.wait_for_selector('a[href*="datos-colegiado-detallado"]', timeout=20000)
-            await page.click('a[href*="datos-colegiado-detallado"]')
 
+            # 🔸 Fallback: intentar buscar repetidamente hasta 10 s más
+            try:
+                await page.wait_for_selector('a[href*="datos-colegiado-detallado"]', timeout=20000)
+            except:
+                print("[WARN] Enlace de detalle no visible. Reintentando scroll + espera adicional...")
+                await page.mouse.wheel(0, 2000)
+                await page.wait_for_timeout(5000)
+
+            links = await page.query_selector_all('a[href*="datos-colegiado-detallado"]')
+            if not links:
+                print("[ERROR] ❌ No se encontró el enlace de detalle, guardando HTML para diagnóstico.")
+                html_debug = await page.content()
+                with open("debug_no_detalle.html", "w", encoding="utf-8") as f:
+                    f.write(html_debug)
+                await browser.close()
+                return {"error": "No se encontró el enlace de detalle. Ver archivo debug_no_detalle.html."}
+
+            await links[0].click()
             print("[INFO] Entrando a la página de detalle...")
-            await page.wait_for_load_state("load", timeout=30000)
+            await page.wait_for_load_state("networkidle", timeout=30000)
 
-            # 6️⃣ Obtener HTML de la página final
             html = await page.content()
             await browser.close()
             print("[INFO] HTML del detalle obtenido correctamente")
 
-            # 7️⃣ Analizar con BeautifulSoup
+            # === Análisis con BeautifulSoup ===
             soup = BeautifulSoup(html, "html.parser")
 
-            # Datos principales
             cmp_row = soup.find("tr", class_="cabecera_tr2")
             if cmp_row:
                 cols = cmp_row.find_all("td")
@@ -99,15 +103,12 @@ async def run_cmp(cmp_number):
             else:
                 cmp_number_val, apellidos, nombres = "No existe dato", "No existe dato", "No existe dato"
 
-            # Habilitación
             habil = soup.find("td", string=lambda x: x and any(s in x for s in ["HÁBIL", "NO HÁBIL", "FALLECIDO"]))
             habilitacion_del_medico = habil.get_text(strip=True) if habil else "No existe dato"
 
-            # Consejo Regional
             consejo = soup.find("td", string=lambda x: x and "CONSEJO REGIONAL" in x)
             consejo_regional = consejo.get_text(strip=True) if consejo else "No existe dato"
 
-            # Especialidades
             especialidades = []
             tabla_esp = soup.find_all("tr", class_="cabecera_tr2")
             for fila in tabla_esp:
@@ -120,7 +121,6 @@ async def run_cmp(cmp_number):
                         "fecha": cols[3],
                     })
 
-            # 🔸 Estructura final
             data = {
                 "cmp_number": cmp_number_val,
                 "apellidos": apellidos,
@@ -136,8 +136,12 @@ async def run_cmp(cmp_number):
 
         except Exception as e:
             print(f"[ERROR] ❌ Error durante scraping: {e}")
+            html_debug = await page.content()
+            with open("debug_error.html", "w", encoding="utf-8") as f:
+                f.write(html_debug)
             await browser.close()
             return {"error": str(e)}
+
 
 #############################
 # 🔹 Endpoint Flask
@@ -162,3 +166,4 @@ def get_cmp_info():
 #############################
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+
