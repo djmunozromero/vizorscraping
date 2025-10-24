@@ -26,7 +26,7 @@ async def run_cmp(cmp_number):
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,  # 👈 Cambiado: ejecuta el navegador real (no oculto)
+            headless=True,  # ✅ ← cambia esto a True
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
@@ -35,9 +35,10 @@ async def run_cmp(cmp_number):
                 "--disable-infobars",
                 "--disable-extensions",
                 "--disable-gpu",
-                "--start-maximized",
             ]
         )
+
+
 
         context = await browser.new_context(
             viewport={"width": 1366, "height": 768},
@@ -166,4 +167,3 @@ def get_cmp_info():
 #############################
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
-
